@@ -15,7 +15,7 @@
 #include "err.h"
 #include "constants.h"
 
-#define MAX_CLIENTS 100
+#define MAX_CLIENTS 20
 #define BUF_SIZE 1024
 #define TRUE 1
 #define FALSE 0
@@ -43,6 +43,12 @@ struct connection_description {
 };
 
 struct connection_description clients[MAX_CLIENTS];
+
+struct client_fifo {
+	void * data;
+};
+
+struct client_fifo fifo[MAX_CLIENTS];
 
 void handle_commandline_args(int argc, char *argv[]){
 	int is_hi_wtrmrk_set = FALSE;
@@ -79,17 +85,20 @@ void init_clients(void){
 	memset(clients, 0, sizeof(clients));
 }
 
-struct connection_description *get_client_slot(void)
-{
+int get_client_slot(void){
 	int i;
 	for(i = 0; i < MAX_CLIENTS; i++)
-		if(!clients[i].ev)
-			return &clients[i];
-	return NULL;
+		if(!clients[i].ev) 
+			return i;
+	return -1;
 }
 
-void client_socket_cb(evutil_socket_t sock, short ev, void *arg)
-{
+void free_client_slot(int slot){
+	event_free(clients[slot].ev);
+	free(fifo[slot].data);
+}
+
+void client_socket_cb(evutil_socket_t sock, short ev, void *arg){
 	struct connection_description *cl = (struct connection_description *)arg;
 	char buf[BUF_SIZE+1];
 
@@ -115,8 +124,7 @@ void client_socket_cb(evutil_socket_t sock, short ev, void *arg)
 
 }
 
-void tcp_socket_cb(evutil_socket_t sock, short ev, void *arg)
-{
+void tcp_socket_cb(evutil_socket_t sock, short ev, void *arg){
 	struct event_base *base = (struct event_base *)arg;
 
 	struct sockaddr_in sin;
@@ -125,22 +133,36 @@ void tcp_socket_cb(evutil_socket_t sock, short ev, void *arg)
 
 	if(connection_socket == -1) syserr("Error accepting connection.");
 
-	struct connection_description *cl = get_client_slot();
-	if(!cl) {
+	int slot = get_client_slot();
+	
+	if(slot < 0) {
 		close(connection_socket);
 		fprintf(stderr, "Ignoring connection attempt from %s:%d due to lack of space.\n",
 			inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
 		return;
 	}
+	struct connection_description *cl = &clients[slot];
 
 	memcpy(&(cl->address), &sin, sizeof(struct sockaddr_in));
 	cl->sock = connection_socket;
+	/*send client ID */
+	char buffer[BUF_SIZE];
+	memset(buffer, 0, BUF_SIZE);
+	sprintf(buffer, "CLIENT %d\n", slot); 
+	uint16_t len = strlen(buffer) + 1;
+	if (write(connection_socket, buffer, len) != len) 
+		free_client_slot(slot);
 
+	memset(fifo[slot], 0, FIFO_SIZE);
 	struct event *an_event =
 		event_new(base, connection_socket, EV_READ|EV_PERSIST, client_socket_cb, (void *)cl);
 	if(!an_event) syserr("Error creating event.");
 	cl->ev = an_event;
 	if(event_add(an_event, NULL) == -1) syserr("Error adding an event to a base.");
+}
+
+void udp_socket_cb(evutil_socket_t sock, short ev, void *arg){
+	//TODO
 }
 
 int main(int argc, char *argv[])
@@ -184,15 +206,22 @@ int main(int argc, char *argv[])
 	socklen_t len;
 	len = (socklen_t)sizeof(sin);
 	rc = getsockname(tcp_socket, (struct sockaddr *)&sin, &len);
-	if (rc == -1) syserr("getsockname");
+	if (rc == -1) syserr("getsockname tcp");
+
+	rc = getsockname(udp_socket, (struct sockaddr *)&sin, &len);
+	if (rc == -1) syserr("getsockname udp");
 
 	printf("Listening at port %d\n", (int)ntohs(sin.sin_port));
 
-	if(listen(tcp_socket, 10) == -1) syserr("listen");
+	if(listen(tcp_socket, 10) == -1) syserr("listen tcp");
+	//if(listen(udp_socket, 10) == -1) syserr("listen udp");
 
 	struct event *tcp_socket_event = 
 		event_new(base, tcp_socket, EV_READ|EV_PERSIST, tcp_socket_cb, (void *)base);
-	if(!tcp_socket_event) syserr("Error creating event for a listener socket.");
+	if(!tcp_socket_event) syserr("Error creating event for a tcp listener socket.");
+	struct event *udp_socket_event = 
+		event_new(base, udp_socket, EV_READ|EV_PERSIST, udp_socket_cb, (void *)base);
+	if(!udp_socket_event) syserr("Error creating event for a udp listener socket.");
 
 	if(event_add(tcp_socket_event, NULL) == -1) syserr("Error adding tcp_socket event.");
 

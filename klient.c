@@ -100,7 +100,6 @@ int RETRANSMIT_LIMIT = RETRANSMIT_LIMIT_DEF;
     case 's':
       strcpy(SERVER_NAME, optarg);
       is_srv_name_set = TRUE;
-printf("optarg: %s\n", optarg);
       break;
     case 'X':
       RETRANSMIT_LIMIT = atoi(optarg);
@@ -113,7 +112,6 @@ printf("optarg: %s\n", optarg);
 }
 
 if (!is_srv_name_set) strcpy(SERVER_NAME, "localhost");
-  printf("SERVER_NAME: %s\n", SERVER_NAME);
 
   snprintf(PORT, sizeof(PORT), "%d", PORT_NUM);
   
